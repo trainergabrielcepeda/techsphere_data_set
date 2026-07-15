@@ -14,9 +14,10 @@ PyYAML>=6.0
 Faker>=25.0
 
 # Componente 4 — orquestación de llamadas LLM (§8.2): Databricks Model Serving SDK
-# y/o API externa. Credenciales siempre vía Databricks Secret Scopes, nunca hardcodeadas.
+# (WorkspaceClient, también usado para leer secretos) y/o OpenRouter (Plan 06, primario
+# — HTTP plano vía urllib/stdlib, sin SDK propio). Credenciales siempre vía Databricks
+# Secret Scopes, nunca hardcodeadas.
 databricks-sdk>=0.30
-anthropic>=0.34
 
 # Tooling
 pytest>=8.0

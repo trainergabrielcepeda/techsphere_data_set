@@ -96,3 +96,25 @@ def test_dialogos_capa3_detecta_validado_por_nulo():
     filas = [{"dialogo_id": "d1", "validado_por": None}]
     problems = publish_gold.check_dialogos_capa3_limite(filas)
     assert any("validado_por nulo" in p for p in problems)
+
+
+def test_load_sql_statements_no_corrompe_statement_tras_comentario_con_punto_y_coma():
+    # sql/ddl/00_catalog_schemas.sql tiene un comentario con ';' en medio de la oración
+    # justo antes del primer CREATE CATALOG (Plan 06 Fase 2) — un split(";") ingenuo antes
+    # de filtrar comentarios deja el resto de esa línea de comentario pegado al statement.
+    statements = publish_gold._load_sql_statements("sql/ddl/00_catalog_schemas.sql", "postop_dataset_dev")
+    assert statements[0] == "CREATE CATALOG IF NOT EXISTS postop_dataset_dev"
+
+
+def test_load_sql_statements_grant_use_catalog_sobrevive_intacto():
+    # Regresión del bug real: este GRANT, en producción, quedaba con texto de comentario
+    # pegado al inicio y dejaba de empezar con 'GRANT' — apply_grants lo descartaba en
+    # silencio, participantes nunca recibían USE CATALOG.
+    statements = publish_gold._load_sql_statements("sql/ddl/30_publish_gold_grants.sql", "postop_dataset_dev")
+    assert "GRANT USE CATALOG ON CATALOG postop_dataset_dev TO `account users`" in statements
+
+
+def test_load_sql_statements_sustituye_catalogo_en_todos_los_statements():
+    statements = publish_gold._load_sql_statements("sql/ddl/13_casos_clinicos_etiquetados.sql", "postop_dataset_dev")
+    assert all("postop_dataset_dev" in s for s in statements)
+    assert all("postop_dataset." not in s for s in statements)

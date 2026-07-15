@@ -7,7 +7,7 @@ el resultado del spike de §5.2 que motivó este generador propio.
 from collections import Counter
 
 from postop import clinical_domains
-from postop.generate_synthea_profiles import SYNTHEA_RUNTIME, generate_synthetic_profiles
+from postop.generate_synthea_profiles import SYNTHEA_RUNTIME, generate_synthetic_profiles, write_bundles_to_volume
 
 MODULE_ALLOWLIST = [
     "appendicitis",
@@ -68,3 +68,17 @@ def test_ids_de_paciente_son_unicos():
     perfiles = generate_synthetic_profiles(MODULE_ALLOWLIST, n_pacientes=300, seed=42)
     ids = [p["paciente_id"] for p in perfiles]
     assert len(ids) == len(set(ids))
+
+
+def test_write_bundles_to_volume_limpia_bundles_de_una_corrida_anterior(tmp_path):
+    # Regresión de un bug real (Plan 06 Fase 4): una corrida con n_pacientes grande
+    # seguida de una corrida con n_pacientes chico dejaba archivos huérfanos en el
+    # volumen — parse_bundles_to_perfiles_pacientes los releía todos, produciendo de
+    # nuevo el conteo de la corrida anterior en vez del de la corrida actual.
+    perfiles_grandes = generate_synthetic_profiles(MODULE_ALLOWLIST, n_pacientes=25, seed=42)
+    write_bundles_to_volume(perfiles_grandes, str(tmp_path))
+    assert len(list(tmp_path.glob("*.json"))) == 25
+
+    perfiles_chicos = generate_synthetic_profiles(MODULE_ALLOWLIST, n_pacientes=1, seed=42)
+    write_bundles_to_volume(perfiles_chicos, str(tmp_path))
+    assert len(list(tmp_path.glob("*.json"))) == 1

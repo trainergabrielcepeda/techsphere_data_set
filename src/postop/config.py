@@ -26,30 +26,38 @@ def load_config(path: Optional[str] = None) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def catalog_name(config: Optional[dict[str, Any]] = None) -> str:
+def catalog_name(config: Optional[dict[str, Any]] = None, catalog_override: Optional[str] = None) -> str:
     """Nombre del catálogo Unity Catalog.
 
-    En Databricks, este valor puede venir sobrescrito por la variable de bundle
-    ``catalog_name`` (ver databricks.yml, target dev vs. prod) — el config.py
-    resuelve el default declarado en conf/project.yml cuando no se pasa override.
+    En Databricks, este valor viene sobrescrito por la variable de bundle
+    ``catalog_name`` (ver databricks.yml, target dev vs. prod), pasada a cada script como
+    ``--catalog`` y de ahí a ``catalog_override`` aquí — el default de conf/project.yml
+    solo aplica cuando no se pasa override (p. ej. en pruebas locales). Antes de Plan 06
+    Fase 4, ``catalog_override`` no existía: cada task ignoraba ``--catalog`` para
+    lectura/escritura de tablas (seguía usando el ``postop_dataset`` de conf/project.yml
+    pase lo que pase) — solo se descubrió al correr el job real contra
+    ``postop_dataset_dev`` (``SCHEMA_NOT_FOUND: postop_dataset.silver``, catálogo que ni
+    siquiera existe en este workspace).
     """
+    if catalog_override:
+        return catalog_override
     config = config or load_config()
     return config["catalog"]["name"]
 
 
-def schema_fqn(schema_key: str, config: Optional[dict[str, Any]] = None) -> str:
+def schema_fqn(schema_key: str, config: Optional[dict[str, Any]] = None, catalog_override: Optional[str] = None) -> str:
     """``catalog.schema`` para una clave declarada en conf/project.yml (catalog.schemas).
 
     Ej.: ``schema_fqn("silver")`` -> ``"postop_dataset.silver"``.
     """
     config = config or load_config()
     schema = config["catalog"]["schemas"][schema_key]
-    return f"{catalog_name(config)}.{schema}"
+    return f"{catalog_name(config, catalog_override)}.{schema}"
 
 
-def table_fqn(schema_key: str, table_name: str, config: Optional[dict[str, Any]] = None) -> str:
+def table_fqn(schema_key: str, table_name: str, config: Optional[dict[str, Any]] = None, catalog_override: Optional[str] = None) -> str:
     """``catalog.schema.table`` de tres niveles, listo para ``spark.table()``/``spark.sql()``."""
-    return f"{schema_fqn(schema_key, config)}.{table_name}"
+    return f"{schema_fqn(schema_key, config, catalog_override)}.{table_name}"
 
 
 def stable_seed(*parts: object) -> int:

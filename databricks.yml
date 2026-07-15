@@ -19,10 +19,21 @@ variables:
     description: Catálogo Unity Catalog dedicado al reto (ver conf/project.yml)
     default: postop_dataset
   llm_secret_scope:
-    description: Databricks Secret Scope con credenciales del LLM externo (§8.2, §13)
+    description: >-
+      Databricks Secret Scope con la credencial del LLM externo (§8.2, §13) — clave
+      openrouter-api-key para el camino OpenRouter (Plan 06, primario)
     default: postop-llm-secrets
+  llm_provider:
+    description: Proveedor LLM para simulate_dual_llm — "openrouter" (Plan 06, primario, validado en Fase 0) o "databricks" (Model Serving, sin validar)
+    default: openrouter
+  openrouter_model:
+    description: >-
+      Modelo ":free" primario en OpenRouter (usado solo si llm_provider=openrouter) —
+      elegido en Plan 06 Fase 0 tras probar 6 candidatos contra el catálogo real; recae
+      automáticamente en openrouter/free si agota sus reintentos (ver simulate_dual_llm.py)
+    default: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
   model_serving_endpoint:
-    description: Nombre del endpoint de Databricks Model Serving usado por simulate_dual_llm (§8.2)
+    description: Nombre del endpoint de Databricks Model Serving usado por simulate_dual_llm (§8.2) — solo si llm_provider=databricks, sin validar en Free Edition
     default: ""
   pilot_n_pacientes:
     description: Tamaño del piloto end-to-end antes de escalar (§14)

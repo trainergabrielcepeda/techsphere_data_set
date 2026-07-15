@@ -20,13 +20,24 @@ transformación silenciosa", no "ningún turno sin mapping".
 from __future__ import annotations
 
 import argparse
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
+# Databricks ejecuta este archivo como spark_python_task suelto (python_file, sin
+# empaquetar como wheel — §11) — src/ no queda en sys.path por su cuenta, confirmado al
+# correr el job real en Plan 06 Fase 4 (ModuleNotFoundError: No module named 'postop').
+# __file__ tampoco existe en este contexto: Databricks ejecuta el script vía
+# exec(compile(source, filename, 'exec')), que no inyecta __file__ en los globals —
+# también confirmado contra el workspace real (NameError: name '__file__' is not
+# defined). sys._getframe().f_code.co_filename sí lo tiene, vía co_filename del compile().
+_this_file = sys._getframe().f_code.co_filename
+sys.path.insert(0, str(Path(_this_file).resolve().parents[1]))
+
 from postop import config
 
-_SQL_DDL_ROOT = Path(__file__).resolve().parents[2] / "sql" / "ddl"
+_SQL_DDL_ROOT = Path(_this_file).resolve().parents[2] / "sql" / "ddl"
 
 
 def check_perfiles_pacientes_co(rows: list[dict]) -> list[str]:
@@ -115,12 +126,23 @@ def _load_sql_statements(relative_path: str, catalog: str) -> list[str]:
     """Lee un archivo .sql relativo a la raíz del repo, lo separa en statements
     individuales (por ``;``), y sustituye el catálogo por defecto (``postop_dataset``)
     por ``catalog``.
+
+    Las líneas de comentario se descartan ANTES de partir por ``;`` (no después) —
+    varios comentarios en sql/ddl/*.sql contienen un ``;`` dentro del texto (p. ej. una
+    oración con punto y coma, o un GRANT de ejemplo documentado en un comentario). Partir
+    primero por ``;`` y filtrar comentarios después dejaba pasar el resto de esa línea de
+    comentario pegado al statement real siguiente — encontrado al ejecutar esta función a
+    mano en el bootstrap de Plan 06 Fase 2 contra el catálogo real: corrompía el primer
+    ``CREATE CATALOG`` de 00_catalog_schemas.sql, y en 30_publish_gold_grants.sql hacía que
+    ``GRANT USE CATALOG ON CATALOG ... TO account users`` quedara con texto de comentario
+    al inicio, dejara de empezar con ``GRANT`` y ``apply_grants`` lo descartara en
+    silencio — el grant de acceso al catálogo para participantes nunca se ejecutaba.
     """
     raw = (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    sql_only = "\n".join(linea for linea in raw.splitlines() if linea.strip() and not linea.strip().startswith("--"))
     statements = []
-    for chunk in raw.split(";"):
-        lineas = [linea for linea in chunk.splitlines() if linea.strip() and not linea.strip().startswith("--")]
-        stmt = "\n".join(lineas).strip()
+    for chunk in sql_only.split(";"):
+        stmt = chunk.strip()
         if stmt:
             statements.append(stmt.replace("postop_dataset", catalog))
     return statements

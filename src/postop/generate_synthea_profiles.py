@@ -27,9 +27,20 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+# Databricks ejecuta este archivo como spark_python_task suelto (python_file, sin
+# empaquetar como wheel — §11) — src/ no queda en sys.path por su cuenta, confirmado al
+# correr el job real en Plan 06 Fase 4 (ModuleNotFoundError: No module named 'postop').
+# __file__ tampoco existe en este contexto: Databricks ejecuta el script vía
+# exec(compile(source, filename, 'exec')), que no inyecta __file__ en los globals —
+# también confirmado contra el workspace real (NameError: name '__file__' is not
+# defined). sys._getframe().f_code.co_filename sí lo tiene, vía co_filename del compile().
+_this_file = sys._getframe().f_code.co_filename
+sys.path.insert(0, str(Path(_this_file).resolve().parents[1]))
 
 from postop import clinical_domains, config
 
@@ -90,16 +101,37 @@ def generate_synthetic_profiles(
 
 
 def write_bundles_to_volume(profiles: list[dict], bronze_volume_path: str) -> None:
-    """Escribe un JSON por paciente en ``bronze_volume_path``.
+    """Escribe un JSON por paciente en ``bronze_volume_path``, después de limpiar
+    cualquier bundle de una corrida anterior.
 
     Los Volumes de Databricks están montados como filesystem POSIX estándar
     (``/Volumes/<catalog>/<schema>/<volume>``) — escribir aquí no requiere Spark.
+
+    La limpieza previa (Plan 06 Fase 4) es necesaria porque ``parse_bundles_to_
+    perfiles_pacientes`` lee TODO lo que encuentre en el volumen — sin ella, un
+    ``paciente_id``/``bundle_id`` que no colisiona con esta corrida (p. ej. una corrida
+    anterior con más pacientes) queda huérfano en el volumen y se re-ingiere en la
+    siguiente corrida, aunque ``silver.perfiles_pacientes`` se sobrescriba por completo.
+    Encontrado al pilotear con 1 paciente después de una corrida de prueba con 25: el
+    volumen seguía teniendo los otros 24 bundles y `silver.perfiles_pacientes` volvía a
+    salir con 25 filas en vez de 1.
     """
     out_dir = Path(bronze_volume_path)
     out_dir.mkdir(parents=True, exist_ok=True)
+    target_names = {f"{profile['bundle_id']}.json" for profile in profiles}
     for profile in profiles:
         out_path = out_dir / f"{profile['bundle_id']}.json"
         out_path.write_text(json.dumps(profile, ensure_ascii=False), encoding="utf-8")
+    # Limpiar huérfanos DESPUÉS de escribir, nunca antes: un delete-then-recreate sobre el
+    # mismo nombre (mismo seed+índice entre corridas con distinto n_pacientes) disparó una
+    # condición de carrera real contra el backend del Volume (probado empíricamente,
+    # Plan 06 Fase 4) — el archivo recién escrito desaparecía antes de que
+    # parse_bundles_to_perfiles_pacientes pudiera leerlo. Sobrescribir en vez de
+    # borrar+recrear evita la carrera; los huérfanos genuinos (de una corrida anterior con
+    # más pacientes) se limpian acá, sin tocar los nombres de esta corrida.
+    for existing in out_dir.glob("*.json"):
+        if existing.name not in target_names:
+            existing.unlink()
 
 
 def parse_bundles_to_perfiles_pacientes(spark, bronze_volume_path: str, output_table: str) -> None:
@@ -137,7 +169,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     seed = args.seed if args.seed is not None else cfg["population"]["seed"]
 
     bronze_volume_path = f"/Volumes/{args.catalog}/bronze/raw_synthea_bundles"
-    output_table = config.table_fqn("silver", "perfiles_pacientes", cfg)
+    output_table = config.table_fqn("silver", "perfiles_pacientes", cfg, catalog_override=args.catalog)
 
     profiles = generate_synthetic_profiles(module_allowlist, n_pacientes, seed)
     write_bundles_to_volume(profiles, bronze_volume_path)

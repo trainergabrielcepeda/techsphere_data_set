@@ -28,8 +28,20 @@ from __future__ import annotations
 
 import argparse
 import random
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
+
+# Databricks ejecuta este archivo como spark_python_task suelto (python_file, sin
+# empaquetar como wheel — §11) — src/ no queda en sys.path por su cuenta, confirmado al
+# correr el job real en Plan 06 Fase 4 (ModuleNotFoundError: No module named 'postop').
+# __file__ tampoco existe en este contexto: Databricks ejecuta el script vía
+# exec(compile(source, filename, 'exec')), que no inyecta __file__ en los globals —
+# también confirmado contra el workspace real (NameError: name '__file__' is not
+# defined). sys._getframe().f_code.co_filename sí lo tiene, vía co_filename del compile().
+_this_file = sys._getframe().f_code.co_filename
+sys.path.insert(0, str(Path(_this_file).resolve().parents[1]))
 
 from postop import config
 
@@ -321,9 +333,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     cfg = config.load_config()
-    capa1_table = config.table_fqn("silver", "dialogos_capa1_limpia", cfg)
-    output_table = config.table_fqn("silver", "dialogos_capa2_ruidosa", cfg)
-    mapping_log_table = config.table_fqn("silver", "noise_mapping_log", cfg)
+    capa1_table = config.table_fqn("silver", "dialogos_capa1_limpia", cfg, catalog_override=args.catalog)
+    output_table = config.table_fqn("silver", "dialogos_capa2_ruidosa", cfg, catalog_override=args.catalog)
+    mapping_log_table = config.table_fqn("silver", "noise_mapping_log", cfg, catalog_override=args.catalog)
 
     from pyspark.sql import SparkSession  # import diferido — solo disponible en el cluster
 
