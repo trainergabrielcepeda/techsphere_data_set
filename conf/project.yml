@@ -1,0 +1,58 @@
+# Configuración del proyecto — Dataset Seguimiento Post-Operatorio (Tech Sphere 2026)
+# Referenciado por src/postop/config.py. No contiene secretos ni URLs de workspace
+# (eso vive en databricks.yml como variables de bundle / Secret Scopes).
+
+catalog:
+  name: postop_dataset
+  schemas:
+    bronze: bronze
+    silver: silver
+    gold_participantes: gold_participantes
+    gold_comite: gold_comite
+
+bronze:
+  raw_volume: raw_synthea_bundles
+
+# Allowlist de módulos Synthea/PySynthea — Diseño Técnico §5.1.
+# No correr el catálogo completo de módulos (cientos, mayoría irrelevante y costosos en tiempo).
+synthea:
+  module_allowlist:
+    - appendicitis
+    - cholecystitis
+    - colorectal_cancer
+    - total_joint_replacement
+    - breast_cancer
+
+# Simulador de trayectorias post-operatorias — Diseño Técnico §5.3.
+trajectories:
+  # Días post-operatorios en los que se genera una llamada de seguimiento (configurable).
+  call_days: [1, 3, 7, 14]
+  archetypes:
+    - recuperacion_normal
+    - complicacion_leve_vigilancia
+    - complicacion_real
+
+# Piloto recomendado antes de escalar al volumen completo — §14. Tier de smoke-test más
+# pequeño, para validar costo/calidad antes de una corrida completa — no confundir con
+# population.n_pacientes_representativos (la corrida real).
+pilot:
+  n_pacientes: 25
+
+# Población "significativa representativa de Colombia" (Plan 05). 300 pacientes: lo
+# bastante grande para que cada label (verde/amarillo/rojo) pueda superar el piso del
+# 10% exigido en §12 sin forzar el generador, y para que el muestreo geográfico
+# ponderado por DANE (dane_reference.py) se parezca de verdad a la distribución nacional
+# en vez de depender de qué departamentos salieron por azar; lo bastante chico para
+# mantener acotado el costo de simulación dual-LLM (§14) y el cómputo/almacenamiento de
+# Free Edition.
+population:
+  seed: 42
+  n_pacientes_representativos: 300
+
+# Principales referenciados por las grants (sql/ddl/30_publish_gold_grants.sql).
+# Plan 02 (Free Edition): sin SSO/SCIM no hay grupos de Unity Catalog que crear, así que
+# los participantes se cubren con el principal nativo `account users` y el comité se
+# enumera por email individual aquí. En un workspace pagado, volver a grupos nombrados
+# (participant_group / committee_group).
+governance:
+  committee_emails: []

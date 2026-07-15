@@ -1,0 +1,19 @@
+# Databricks bundle local state
+.databricks/
+.databricks-login.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Secrets / local env — never commit workspace URLs, tokens, or API keys
+.env
+*.pem
+secrets.yml
+
+# OS / editor noise
+.DS_Store

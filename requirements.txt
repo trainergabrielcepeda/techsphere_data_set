@@ -1,0 +1,22 @@
+# Core Spark / Delta — Delta-native idioms per project convention (medallion tables, MERGE upserts)
+pyspark>=3.5,<4.0
+delta-spark>=3.2,<4.0
+PyYAML>=6.0
+
+# Componente 1 — generación clínica base (Diseño Técnico §5)
+# Riesgo R1 materializado (§5.2, Plan 05): el pysynthea real (PyPI) es un downloader/
+# query-tool sobre una base OMOP de Synthea ya generada, no un generador de pacientes —
+# no cubre el caso de uso del diseño. Reemplazado por un generador sintético propio
+# (generate_synthea_profiles.py), implementado solo con random/stdlib — sin dependencia
+# de runtime externo.
+
+# Componente 2 — adaptación geográfica Colombia (§6)
+Faker>=25.0
+
+# Componente 4 — orquestación de llamadas LLM (§8.2): Databricks Model Serving SDK
+# y/o API externa. Credenciales siempre vía Databricks Secret Scopes, nunca hardcodeadas.
+databricks-sdk>=0.30
+anthropic>=0.34
+
+# Tooling
+pytest>=8.0
