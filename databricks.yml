@@ -21,23 +21,43 @@ variables:
   llm_secret_scope:
     description: >-
       Databricks Secret Scope con la credencial del LLM externo (§8.2, §13) — clave
-      openrouter-api-key para el camino OpenRouter (Plan 06, primario)
+      openrouter-api-key para el camino OpenRouter (Plan 06, primario) o anthropic-api-key
+      para el camino Anthropic (Plan 08, alternativo, sin cuota diaria de cuenta)
     default: postop-llm-secrets
   llm_provider:
-    description: Proveedor LLM para simulate_dual_llm — "openrouter" (Plan 06, primario, validado en Fase 0) o "databricks" (Model Serving, sin validar)
-    default: openrouter
+    description: >-
+      Proveedor LLM para simulate_dual_llm — "anthropic" (Plan 08, primario desde la
+      corrida de 10 pacientes de Plan 07/08 — sin la cuota diaria de OpenRouter, validado
+      con un spike real de 2 turnos contra claude-sonnet-5), "openrouter" (Plan 06,
+      camino previo, bloqueado por cuota diaria hasta que resetee), o "databricks" (Model
+      Serving, sin validar)
+    default: anthropic
   openrouter_model:
     description: >-
       Modelo ":free" primario en OpenRouter (usado solo si llm_provider=openrouter) —
       elegido en Plan 06 Fase 0 tras probar 6 candidatos contra el catálogo real; recae
       automáticamente en openrouter/free si agota sus reintentos (ver simulate_dual_llm.py)
     default: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+  anthropic_model:
+    description: >-
+      Modelo de la API de Anthropic (usado solo si llm_provider=anthropic, Plan 08) — el
+      modelo presupuestado explícitamente para la corrida de 10 pacientes de Plan 07/08
+    default: claude-sonnet-5
+  max_tokens:
+    description: >-
+      Tope de tokens de salida por turno agente/paciente (Plan 07/08) — aplica por igual a
+      openrouter y anthropic, para mantener las conversaciones breves. Punto de partida sin
+      validar empíricamente contra los modelos reales; confirmar con una llamada de spike
+      antes de una corrida real.
+    default: "500"
   model_serving_endpoint:
     description: Nombre del endpoint de Databricks Model Serving usado por simulate_dual_llm (§8.2) — solo si llm_provider=databricks, sin validar en Free Edition
     default: ""
   pilot_n_pacientes:
-    description: Tamaño del piloto end-to-end antes de escalar (§14)
-    default: "25"
+    description: >-
+      Tamaño de la corrida (§14) — 10 pacientes (Plan 07), reducido desde el piloto de 25
+      del draft original de Plan 06, dado el costo/cuota de una corrida de 300 (§14 completo)
+    default: "10"
 
 include:
   - resources/*.yml

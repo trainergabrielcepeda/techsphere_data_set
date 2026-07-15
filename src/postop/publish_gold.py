@@ -59,10 +59,14 @@ def check_casos_clinicos_etiquetados(rows: list[dict]) -> list[str]:
     total = len(rows)
     conteos = Counter(row["label"] for row in rows)
     problems = []
+    # Banda ampliada ±5 puntos porcentuales (Plan 07) — [10%,70%] original ajustado a
+    # [5%,75%] para corridas de muestra pequeña (p. ej. 10 pacientes / 40 casos), donde el
+    # balance exacto de labels es más difícil de alcanzar que con la población completa
+    # (300 pacientes, §14) sin forzar el generador.
     for label in ("verde", "amarillo", "rojo"):
         pct = conteos.get(label, 0) / total
-        if pct < 0.10 or pct > 0.70:
-            problems.append(f"casos_clinicos_etiquetados: label '{label}' fuera de rango [10%,70%] ({pct:.1%})")
+        if pct < 0.05 or pct > 0.75:
+            problems.append(f"casos_clinicos_etiquetados: label '{label}' fuera de rango [5%,75%] ({pct:.1%})")
     return problems
 
 

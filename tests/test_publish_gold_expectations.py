@@ -53,6 +53,21 @@ def test_casos_clinicos_etiquetados_detecta_label_subrepresentado():
     assert any("rojo" in p for p in problems)
 
 
+def test_casos_clinicos_etiquetados_banda_ampliada_5_75_pasa_en_el_borde():
+    # Plan 07: banda ampliada de [10%,70%] a [5%,75%] — un label al 6% (antes fallaba)
+    # ahora pasa, y uno al 74% (antes fallaba) también pasa.
+    casos = [_caso("verde")] * 74 + [_caso("amarillo")] * 20 + [_caso("rojo")] * 6
+    assert publish_gold.check_casos_clinicos_etiquetados(casos) == []
+
+
+def test_casos_clinicos_etiquetados_banda_ampliada_sigue_fallando_fuera_del_5_75():
+    # 3% y 76% siguen fuera de [5%,75%] — la banda se amplió, no se eliminó.
+    casos = [_caso("verde")] * 76 + [_caso("amarillo")] * 21 + [_caso("rojo")] * 3
+    problems = publish_gold.check_casos_clinicos_etiquetados(casos)
+    assert any("verde" in p for p in problems)
+    assert any("rojo" in p for p in problems)
+
+
 def _turno(dialogo_id, caso_id, hablante, texto="algo"):
     return {"dialogo_id": dialogo_id, "caso_id": caso_id, "hablante": hablante, "texto": texto}
 

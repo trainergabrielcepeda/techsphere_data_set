@@ -42,4 +42,7 @@ Estilo de habla para esta llamada: {{estilo_paciente}}.
 
 No menciones ninguna clasificación médica (normal/vigilar/urgente) ni uses lenguaje de
 diagnóstico — solo describe cómo te sientes, en tus palabras, en español colombiano.
+
+Responde de forma breve, 1-2 frases por turno, como en una llamada telefónica real — no
+des discursos largos (Plan 07).
 ```

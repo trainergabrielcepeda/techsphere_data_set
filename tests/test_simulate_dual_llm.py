@@ -1,15 +1,20 @@
-"""Pruebas del cliente OpenRouter y del checkpointing por cuota (Componente 4, Plan 06).
+"""Pruebas del cliente OpenRouter, el cliente Anthropic y el checkpointing por cuota
+(Componente 4, Plan 06, extendido Plan 07/08).
 
-No cubre ``_openrouter_client``/``_default_client`` en sí — ambos importan
-``databricks.sdk`` de forma diferida (solo disponible en el cluster), el mismo límite de
-testabilidad que ya existía para ``_default_client`` antes de este plan. Lo que sí se
-prueba sin red ni SDK: el filtro de reanudación, la lógica de reintento/backoff/fallback
-contra un doble de la capa HTTP, y la extracción del hint de reintento.
+No cubre ``_openrouter_client``/``_default_client``/``_anthropic_client`` en sí — los tres
+importan ``databricks.sdk`` de forma diferida (solo disponible en el cluster) para leer el
+secreto real, el mismo límite de testabilidad que ya existía para ``_default_client``
+antes de este plan. Lo que sí se prueba sin red ni SDK: el filtro de reanudación, la
+lógica de reintento/backoff/fallback contra un doble de la capa HTTP, la extracción del
+hint de reintento, el mapeo de la forma de respuesta de Anthropic
+(``_parse_anthropic_response``, una función pura), y el despacho de proveedor/parámetros
+en ``_build_default_client`` contra dobles inyectados.
 """
 
 import io
 import json
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +100,62 @@ def test_build_default_client_rechaza_proveedor_invalido():
         sdl._build_default_client("groq", "", "scope", "modelo")
 
 
+def test_build_default_client_despacha_a_anthropic_client_con_sus_parametros(monkeypatch):
+    llamado = {}
+
+    def fake_anthropic_client(model, secret_scope, max_tokens=None):
+        llamado["model"] = model
+        llamado["secret_scope"] = secret_scope
+        llamado["max_tokens"] = max_tokens
+        return lambda system_prompt, history: None
+
+    monkeypatch.setattr(sdl, "_anthropic_client", fake_anthropic_client)
+    sdl._build_default_client(
+        "anthropic", "", "scope", "or-modelo", anthropic_model="claude-sonnet-5", max_tokens=500
+    )
+
+    assert llamado == {"model": "claude-sonnet-5", "secret_scope": "scope", "max_tokens": 500}
+
+
+def test_build_default_client_pasa_max_tokens_a_openrouter_client(monkeypatch):
+    llamado = {}
+
+    def fake_openrouter_client(model, secret_scope, max_tokens=None):
+        llamado["max_tokens"] = max_tokens
+        return lambda system_prompt, history: None
+
+    monkeypatch.setattr(sdl, "_openrouter_client", fake_openrouter_client)
+    sdl._build_default_client("openrouter", "", "scope", "or-modelo", max_tokens=250)
+
+    assert llamado["max_tokens"] == 250
+
+
+def test_parse_anthropic_response_extrae_texto_y_uso():
+    respuesta = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="Hola, ¿cómo se siente hoy?")],
+        usage=SimpleNamespace(input_tokens=42, output_tokens=17),
+    )
+    resultado = sdl._parse_anthropic_response(respuesta)
+    assert resultado.texto == "Hola, ¿cómo se siente hoy?"
+    assert resultado.prompt_tokens == 42
+    assert resultado.completion_tokens == 17
+
+
+def test_parse_anthropic_response_ignora_bloques_que_no_son_de_texto():
+    # p. ej. un bloque `thinking` (razonamiento oculto del modelo) antes del bloque de
+    # texto real — solo el primer bloque `text` es la respuesta visible que debe llegar
+    # al diálogo; el razonamiento nunca debe filtrarse a dialogos_capa1_limpia.
+    respuesta = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="thinking", text=""),
+            SimpleNamespace(type="text", text="respuesta real"),
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=8),
+    )
+    resultado = sdl._parse_anthropic_response(respuesta)
+    assert resultado.texto == "respuesta real"
+
+
 def test_openrouter_request_reintenta_429_y_luego_tiene_exito(monkeypatch):
     calls = {"n": 0}
     sleeps = []
@@ -161,6 +222,34 @@ def test_openrouter_request_reintenta_5xx(monkeypatch):
     data = sdl._openrouter_request("modelo-x", "system", [], "key", pacer, max_attempts=3)
     assert data["choices"][0]["message"]["content"] == "ok"
     assert calls["n"] == 3
+
+
+def test_openrouter_request_incluye_max_tokens_en_payload_cuando_se_especifica(monkeypatch):
+    payloads = []
+
+    def fake_post(url, headers, payload, timeout=60):
+        payloads.append(payload)
+        return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    monkeypatch.setattr(sdl, "_http_post_json", fake_post)
+    pacer = sdl._RequestPacer(0.0)
+    sdl._openrouter_request("modelo-x", "system", [], "key", pacer, max_attempts=3, max_tokens=120)
+
+    assert payloads[0]["max_tokens"] == 120
+
+
+def test_openrouter_request_omite_max_tokens_si_no_se_especifica(monkeypatch):
+    payloads = []
+
+    def fake_post(url, headers, payload, timeout=60):
+        payloads.append(payload)
+        return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    monkeypatch.setattr(sdl, "_http_post_json", fake_post)
+    pacer = sdl._RequestPacer(0.0)
+    sdl._openrouter_request("modelo-x", "system", [], "key", pacer, max_attempts=3)
+
+    assert "max_tokens" not in payloads[0]
 
 
 def test_request_pacer_respeta_intervalo_minimo(monkeypatch):

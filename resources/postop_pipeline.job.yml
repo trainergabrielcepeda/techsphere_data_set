@@ -37,6 +37,17 @@ resources:
       name: postop_pipeline_${bundle.target}
       max_concurrent_runs: 1
 
+      # Programación (Plan 07): corrida diaria, pausada por defecto — el job.yml declara
+      # el schedule pero no empieza a disparar solo hasta que se despause explícitamente
+      # (safety default: crear el schedule no gasta cuota/dinero; despausarlo sí lo hace
+      # correr). Confirmado empíricamente contra este workspace Free Edition (Plan 07
+      # Fase 0, jobs create/get/delete de prueba) que los triggers de cron sí funcionan
+      # aquí — no es un supuesto sin validar.
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "America/Bogota"
+        pause_status: PAUSED
+
       environments:
         - environment_key: postop_env
           spec:
@@ -44,6 +55,9 @@ resources:
             dependencies:
               - Faker>=25.0
               - databricks-sdk>=0.30
+              # Camino Anthropic (Plan 08) — sin cuota diaria de cuenta a diferencia del
+              # nivel gratuito de OpenRouter, seleccionable con --llm-provider=anthropic.
+              - anthropic>=0.68
 
       tasks:
         # Componente 1 (§5) — allowlist de módulos declarada en conf/project.yml
@@ -83,8 +97,10 @@ resources:
         # Componente 4 (§8) — simulación dual-LLM. Primario (Plan 06, validado en Fase 0
         # contra el workspace real): OpenRouter vía Secret Scope (riesgo R5) — el egress
         # desde Free Edition serverless hacia openrouter.ai funciona, confirmado
-        # empíricamente. Databricks Model Serving (--llm-provider=databricks) queda como
-        # segundo camino, sin validar (ver simulate_dual_llm.py).
+        # empíricamente. Anthropic (--llm-provider=anthropic, Plan 08) es el camino
+        # alternativo sin cuota diaria de cuenta. Databricks Model Serving
+        # (--llm-provider=databricks) queda como tercer camino, sin validar (ver
+        # simulate_dual_llm.py).
         - task_key: simulate_dual_llm
           depends_on:
             - task_key: classify_ground_truth
@@ -98,6 +114,10 @@ resources:
               - "${var.llm_provider}"
               - "--openrouter-model"
               - "${var.openrouter_model}"
+              - "--anthropic-model"
+              - "${var.anthropic_model}"
+              - "--max-tokens"
+              - "${var.max_tokens}"
               - "--model-serving-endpoint"
               - "${var.model_serving_endpoint}"
               - "--secret-scope"
