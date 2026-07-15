@@ -1,0 +1,60 @@
+# Databricks Asset Bundle — Dataset Seguimiento Post-Operatorio (Tech Sphere 2026)
+# Diseño Técnico §11: pipeline completo (clusters, jobs, permisos) como código,
+# desplegable a un workspace dev y luego al de entrega, versionado en Git.
+#
+# Despliegue:
+#   databricks bundle validate -t dev
+#   databricks bundle deploy   -t dev
+#   databricks bundle run postop_pipeline -t dev
+#
+# Workspace host y credenciales NUNCA se fijan aquí: se resuelven vía perfil de
+# `databricks configure` o las variables de entorno DATABRICKS_HOST / DATABRICKS_TOKEN
+# al momento de `bundle deploy` (§13 — nada de secretos ni URLs de workspace en el repo).
+
+bundle:
+  name: postop_dataset
+
+variables:
+  catalog_name:
+    description: Catálogo Unity Catalog dedicado al reto (ver conf/project.yml)
+    default: postop_dataset
+  llm_secret_scope:
+    description: >-
+      Databricks Secret Scope con la credencial del LLM externo (§8.2, §13) — clave
+      openrouter-api-key para el camino OpenRouter (Plan 06, primario)
+    default: postop-llm-secrets
+  llm_provider:
+    description: Proveedor LLM para simulate_dual_llm — "openrouter" (Plan 06, primario, validado en Fase 0) o "databricks" (Model Serving, sin validar)
+    default: openrouter
+  openrouter_model:
+    description: >-
+      Modelo ":free" primario en OpenRouter (usado solo si llm_provider=openrouter) —
+      elegido en Plan 06 Fase 0 tras probar 6 candidatos contra el catálogo real; recae
+      automáticamente en openrouter/free si agota sus reintentos (ver simulate_dual_llm.py)
+    default: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+  model_serving_endpoint:
+    description: Nombre del endpoint de Databricks Model Serving usado por simulate_dual_llm (§8.2) — solo si llm_provider=databricks, sin validar en Free Edition
+    default: ""
+  pilot_n_pacientes:
+    description: Tamaño del piloto end-to-end antes de escalar (§14)
+    default: "25"
+
+include:
+  - resources/*.yml
+
+# dev y prod se despliegan al MISMO workspace: Databricks Free Edition permite un solo
+# workspace/metastore por cuenta (Plan 02), así que la separación aquí es solo de
+# catálogo, no de infraestructura.
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog_name: postop_dataset_dev
+
+  prod:
+    mode: production
+    variables:
+      catalog_name: postop_dataset
+    # Sin run_as: Free Edition no tiene SSO/SCIM ni account console, por lo que no hay
+    # grupos que asignar (Plan 02) — corre como el usuario que despliega el bundle.

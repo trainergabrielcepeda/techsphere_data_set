@@ -1,0 +1,123 @@
+# Databricks Workflow — Dataset Seguimiento Post-Operatorio (Diseño Técnico §11)
+#
+# DAG automático (7 tasks). Componente 6 (curate_edge_cases, notebooks/curate_edge_cases.py)
+# se ejecuta deliberadamente FUERA de este job: es curaduría manual human-in-the-loop
+# (§10, §11) que corre después de simulate_dual_llm y se fusiona a mano en
+# silver.dialogos_capa3_limite antes de una corrida de publish_gold dirigida a gold_comite.
+# publish_gold, tal como está aquí, cubre el camino automático hacia gold_participantes
+# (Capas 1+2 solamente).
+#
+# Clusters (§11 deviation — Plan 02): el diseño original asume clusters clásicos
+# (single-node para generate_synthea_profiles/simulate_postop_trajectories, autoscaling
+# compartido para el resto). Databricks Free Edition solo permite serverless compute
+# ("custom compute configurations are not supported") — no hay job_clusters, node types
+# ni autoscale configurables. Todas las tasks corren en serverless; las dependencias que
+# no vienen en el entorno base (Faker, databricks-sdk) se declaran en el `environments`
+# de abajo y se referencian por `environment_key` en cada task.
+#
+# pysynthea (Plan 05): removido de las dependencias — el paquete real de PyPI no es un
+# generador de pacientes (ver generate_synthea_profiles.py, docstring del módulo).
+# Componente 1 ya no depende de ningún runtime externo, solo de la librería estándar.
+#
+# anthropic (Plan 06): removido — el camino LLM externo primario ahora es OpenRouter
+# (simulate_dual_llm.py, _openrouter_client), que habla HTTP plano vía urllib (stdlib),
+# no el SDK de Anthropic.
+#
+# environment_version (Plan 06 Fase 4): el spec original usaba el campo `client: "1"`,
+# deprecado ("Use environment_version instead", bundle schema) — y este workspace ya no
+# lo soporta en absoluto: la primera corrida real del job falló en el arranque del
+# cluster con "Workspace doesn't support Client-1 channel for REPL", antes de ejecutar
+# ninguna task. Probado empíricamente contra el workspace real (jobs submit de un
+# notebook trivial): environment_version 2/3/4 funcionan, 1 no. "3" confirmado también
+# con las dependencias reales (Faker, databricks-sdk) instalando sin conflicto.
+
+resources:
+  jobs:
+    postop_pipeline:
+      name: postop_pipeline_${bundle.target}
+      max_concurrent_runs: 1
+
+      environments:
+        - environment_key: postop_env
+          spec:
+            environment_version: "3"
+            dependencies:
+              - Faker>=25.0
+              - databricks-sdk>=0.30
+
+      tasks:
+        # Componente 1 (§5) — allowlist de módulos declarada en conf/project.yml
+        - task_key: generate_synthea_profiles
+          environment_key: postop_env
+          spark_python_task:
+            python_file: ../src/postop/generate_synthea_profiles.py
+            parameters: ["--catalog", "${var.catalog_name}", "--n-pacientes", "${var.pilot_n_pacientes}"]
+
+        # Componente 1 / §5.3 — simulador probabilístico de trayectorias diarias
+        - task_key: simulate_postop_trajectories
+          depends_on:
+            - task_key: generate_synthea_profiles
+          environment_key: postop_env
+          spark_python_task:
+            python_file: ../src/postop/simulate_postop_trajectories.py
+            parameters: ["--catalog", "${var.catalog_name}"]
+
+        # Componente 2 (§6) — reemplazo de capa demográfica, declarado en metadata de tabla
+        - task_key: adapt_colombia
+          depends_on:
+            - task_key: simulate_postop_trajectories
+          environment_key: postop_env
+          spark_python_task:
+            python_file: ../src/postop/adapt_colombia.py
+            parameters: ["--catalog", "${var.catalog_name}"]
+
+        # Componente 3 (§7) — motor de reglas determinístico, ground-truth antes del LLM
+        - task_key: classify_ground_truth
+          depends_on:
+            - task_key: adapt_colombia
+          environment_key: postop_env
+          spark_python_task:
+            python_file: ../src/postop/classify_ground_truth.py
+            parameters: ["--catalog", "${var.catalog_name}"]
+
+        # Componente 4 (§8) — simulación dual-LLM. Primario (Plan 06, validado en Fase 0
+        # contra el workspace real): OpenRouter vía Secret Scope (riesgo R5) — el egress
+        # desde Free Edition serverless hacia openrouter.ai funciona, confirmado
+        # empíricamente. Databricks Model Serving (--llm-provider=databricks) queda como
+        # segundo camino, sin validar (ver simulate_dual_llm.py).
+        - task_key: simulate_dual_llm
+          depends_on:
+            - task_key: classify_ground_truth
+          environment_key: postop_env
+          spark_python_task:
+            python_file: ../src/postop/simulate_dual_llm.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog_name}"
+              - "--llm-provider"
+              - "${var.llm_provider}"
+              - "--openrouter-model"
+              - "${var.openrouter_model}"
+              - "--model-serving-endpoint"
+              - "${var.model_serving_endpoint}"
+              - "--secret-scope"
+              - "${var.llm_secret_scope}"
+
+        # Componente 5 (§9) — inyector de ruido parametrizable, con noise_mapping_log
+        - task_key: inject_noise
+          depends_on:
+            - task_key: simulate_dual_llm
+          environment_key: postop_env
+          spark_python_task:
+            python_file: ../src/postop/inject_noise.py
+            parameters: ["--catalog", "${var.catalog_name}"]
+
+        # Grants + vistas finales por audiencia (§4, §16) — falla el job si no publica
+        # (§12: calidad de datos) en vez de dejar pasar un dataset roto a gold_participantes.
+        - task_key: publish_gold
+          depends_on:
+            - task_key: inject_noise
+          environment_key: postop_env
+          spark_python_task:
+            python_file: ../src/postop/publish_gold.py
+            parameters: ["--catalog", "${var.catalog_name}"]
