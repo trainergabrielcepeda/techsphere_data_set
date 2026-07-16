@@ -89,6 +89,18 @@ CASOS_CLINICOS_ETIQUETADOS_SCHEMA = StructType(
     ]
 )
 
+# sql/ddl/14_alertas_calidad.sql
+ALERTAS_CALIDAD_SCHEMA = StructType(
+    [
+        StructField("alerta_id", StringType(), nullable=False),
+        StructField("check_nombre", StringType(), nullable=False),
+        StructField("detalle", StringType(), nullable=False),
+        StructField("severidad", StringType(), nullable=False),
+        StructField("catalog_run", StringType(), nullable=False),
+        StructField("generado_ts", TimestampType(), nullable=False),
+    ]
+)
+
 # sql/ddl/20_dialogos_capa1_limpia.sql
 DIALOGOS_CAPA1_LIMPIA_SCHEMA = StructType(
     [

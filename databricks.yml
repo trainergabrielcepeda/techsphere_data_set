@@ -55,9 +55,11 @@ variables:
     default: ""
   pilot_n_pacientes:
     description: >-
-      Tamaño de la corrida (§14) — 10 pacientes (Plan 07), reducido desde el piloto de 25
-      del draft original de Plan 06, dado el costo/cuota de una corrida de 300 (§14 completo)
-    default: "10"
+      Tamaño de la corrida (§14) — 40 pacientes (Plan 09, escalado desde los 10 de Plan
+      07/08 para más diversidad de arquetipos). IDs deterministas por índice
+      (generate_synthea_profiles.py) — escalar este valor extiende la población sin
+      alterar el contenido de los pacientes ya generados con un valor menor.
+    default: "40"
 
 include:
   - resources/*.yml

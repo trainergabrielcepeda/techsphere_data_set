@@ -1,5 +1,8 @@
 """Pruebas de las expectativas de calidad de publicación (§12, Componente publish_gold,
-Plan 05) — cada check corre como función pura sobre list[dict], sin Spark."""
+Plan 05, extendido Plan 09) — cada check corre como función pura sobre list[dict], sin
+Spark."""
+
+from datetime import datetime, timezone
 
 from postop import publish_gold
 
@@ -43,12 +46,12 @@ def _caso(label):
 
 def test_casos_clinicos_etiquetados_pasa_con_distribucion_balanceada():
     casos = [_caso("verde")] * 40 + [_caso("amarillo")] * 30 + [_caso("rojo")] * 30
-    assert publish_gold.check_casos_clinicos_etiquetados(casos) == []
+    assert publish_gold.check_casos_clinicos_etiquetados_balance(casos) == []
 
 
 def test_casos_clinicos_etiquetados_detecta_label_subrepresentado():
     casos = [_caso("verde")] * 95 + [_caso("amarillo")] * 3 + [_caso("rojo")] * 2
-    problems = publish_gold.check_casos_clinicos_etiquetados(casos)
+    problems = publish_gold.check_casos_clinicos_etiquetados_balance(casos)
     assert any("amarillo" in p for p in problems)
     assert any("rojo" in p for p in problems)
 
@@ -57,15 +60,51 @@ def test_casos_clinicos_etiquetados_banda_ampliada_5_75_pasa_en_el_borde():
     # Plan 07: banda ampliada de [10%,70%] a [5%,75%] — un label al 6% (antes fallaba)
     # ahora pasa, y uno al 74% (antes fallaba) también pasa.
     casos = [_caso("verde")] * 74 + [_caso("amarillo")] * 20 + [_caso("rojo")] * 6
-    assert publish_gold.check_casos_clinicos_etiquetados(casos) == []
+    assert publish_gold.check_casos_clinicos_etiquetados_balance(casos) == []
 
 
 def test_casos_clinicos_etiquetados_banda_ampliada_sigue_fallando_fuera_del_5_75():
     # 3% y 76% siguen fuera de [5%,75%] — la banda se amplió, no se eliminó.
     casos = [_caso("verde")] * 76 + [_caso("amarillo")] * 21 + [_caso("rojo")] * 3
-    problems = publish_gold.check_casos_clinicos_etiquetados(casos)
+    problems = publish_gold.check_casos_clinicos_etiquetados_balance(casos)
     assert any("verde" in p for p in problems)
     assert any("rojo" in p for p in problems)
+
+
+def test_casos_clinicos_etiquetados_no_vacio_detecta_tabla_vacia():
+    # Plan 09: separado del balance de labels — una tabla vacía es una falla real de las
+    # tasks anteriores, no una cuestión de distribución, y sigue bloqueando la publicación.
+    assert publish_gold.check_casos_clinicos_etiquetados_no_vacio([]) != []
+
+
+def test_casos_clinicos_etiquetados_no_vacio_pasa_sin_importar_el_balance():
+    # No le importa el balance de labels — eso es responsabilidad exclusiva de
+    # check_casos_clinicos_etiquetados_balance, que ahora es no bloqueante.
+    casos = [_caso("verde")] * 100
+    assert publish_gold.check_casos_clinicos_etiquetados_no_vacio(casos) == []
+
+
+def test_casos_clinicos_etiquetados_balance_no_marca_tabla_vacia():
+    # La tabla vacía ya la cubre check_casos_clinicos_etiquetados_no_vacio — el chequeo
+    # de balance no debe fallar (ni lanzar ZeroDivisionError) sobre una lista vacía.
+    assert publish_gold.check_casos_clinicos_etiquetados_balance([]) == []
+
+
+def test_build_alertas_rows_arma_una_fila_por_alerta():
+    ts = datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
+    filas = publish_gold._build_alertas_rows(["problema A", "problema B"], "postop_dataset_dev", ts)
+
+    assert len(filas) == 2
+    assert filas[0]["check_nombre"] == "casos_clinicos_etiquetados_balance"
+    assert filas[0]["detalle"] == "problema A"
+    assert filas[0]["severidad"] == "advertencia"
+    assert filas[0]["catalog_run"] == "postop_dataset_dev"
+    assert filas[0]["generado_ts"] == ts
+    assert filas[0]["alerta_id"] != filas[1]["alerta_id"]  # IDs únicos por fila
+
+
+def test_build_alertas_rows_vacio_si_no_hay_alertas():
+    assert publish_gold._build_alertas_rows([], "postop_dataset_dev", datetime.now(timezone.utc)) == []
 
 
 def _turno(dialogo_id, caso_id, hablante, texto="algo"):
