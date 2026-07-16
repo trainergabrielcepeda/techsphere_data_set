@@ -25,6 +25,13 @@ GRANT USE SCHEMA, SELECT ON SCHEMA postop_dataset.gold_participantes TO `account
 REVOKE SELECT ON SCHEMA postop_dataset.silver FROM `account users`;
 REVOKE SELECT ON SCHEMA postop_dataset.gold_comite FROM `account users`;
 
+-- Excepción declarada (Plan 09): silver.alertas_calidad SÍ es visible para todos los
+-- participantes, no solo el comité — es la "etiqueta de alerta" sobre desbalance de
+-- labels u otra expectativa de §12 marcada como no bloqueante, y quien entrena un modelo
+-- posterior sobre este dataset necesita verla.
+GRANT USE SCHEMA ON SCHEMA postop_dataset.silver TO `account users`;
+GRANT SELECT ON TABLE postop_dataset.silver.alertas_calidad TO `account users`;
+
 -- gold_participantes.dataset_final — Capas 1+2 solamente (§4).
 CREATE OR REPLACE VIEW postop_dataset.gold_participantes.dataset_final AS
 SELECT

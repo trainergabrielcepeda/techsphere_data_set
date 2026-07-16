@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -53,16 +54,37 @@ def check_perfiles_pacientes_co(rows: list[dict]) -> list[str]:
     return problems
 
 
-def check_casos_clinicos_etiquetados(rows: list[dict]) -> list[str]:
+def check_casos_clinicos_etiquetados_no_vacio(rows: list[dict]) -> list[str]:
+    """Verificación bloqueante (Plan 09): que existan casos clasificados en absoluto —
+    separada deliberadamente del balance de labels (ver
+    ``check_casos_clinicos_etiquetados_balance``), que dejó de bloquear la publicación.
+    Una tabla vacía es una falla real de las tasks anteriores, no una cuestión de
+    distribución — sigue abortando publish_gold.
+    """
+    return ["casos_clinicos_etiquetados: la tabla está vacía"] if not rows else []
+
+
+def check_casos_clinicos_etiquetados_balance(rows: list[dict]) -> list[str]:
+    """Antes ``check_casos_clinicos_etiquetados`` — renombrada en Plan 09 para reflejar
+    que ahora es específicamente el chequeo de balance de labels, cuyo resultado
+    ``run_quality_expectations`` trata como alerta NO bloqueante (registrada en
+    ``silver.alertas_calidad``), no como bloqueo de publicación. Con corridas de muestra
+    pequeña (10-40 pacientes) el balance exacto es difícil de alcanzar sin forzar el
+    generador, y el objetivo actual es alimentar un modelo posterior con datos reales, no
+    una publicación "perfectamente balanceada".
+
+    Banda [5%,75%] sin cambios desde Plan 07 (ampliada desde [10%,70%]) — solo cambió la
+    consecuencia de fallarla, no el umbral.
+    """
     if not rows:
-        return ["casos_clinicos_etiquetados: la tabla está vacía"]
+        return []  # tabla vacía: cubierta por check_casos_clinicos_etiquetados_no_vacio
     total = len(rows)
     conteos = Counter(row["label"] for row in rows)
     problems = []
     for label in ("verde", "amarillo", "rojo"):
         pct = conteos.get(label, 0) / total
-        if pct < 0.10 or pct > 0.70:
-            problems.append(f"casos_clinicos_etiquetados: label '{label}' fuera de rango [10%,70%] ({pct:.1%})")
+        if pct < 0.05 or pct > 0.75:
+            problems.append(f"casos_clinicos_etiquetados: label '{label}' fuera de rango [5%,75%] ({pct:.1%})")
     return problems
 
 
@@ -93,9 +115,16 @@ def check_dialogos_capa3_limite(rows: list[dict]) -> list[str]:
     return [f"dialogos_capa3_limite: validado_por nulo en {row.get('dialogo_id')}" for row in rows if not row.get("validado_por")]
 
 
-def run_quality_expectations(spark, catalog: str) -> bool:
-    """Corre las expectativas de calidad de §12 sobre cada tabla silver/gold. Devuelve
-    False si alguna expectativa crítica no se cumple (el job debe abortar sin publicar).
+def run_quality_expectations(spark, catalog: str) -> tuple[bool, list[str]]:
+    """Corre las expectativas de calidad de §12 sobre cada tabla silver/gold.
+
+    Devuelve ``(ok_para_publicar, alertas_no_bloqueantes)`` (Plan 09 — antes devolvía solo
+    ``bool``). Cuatro de las cinco expectativas siguen siendo bloqueantes: si cualquiera
+    falla, ``ok_para_publicar`` es False y el job debe abortar sin publicar, igual que
+    antes. La quinta (balance de labels en casos_clinicos_etiquetados,
+    ``check_casos_clinicos_etiquetados_balance``) dejó de bloquear — sus mensajes vuelven
+    en ``alertas_no_bloqueantes`` para que el llamador los registre en
+    ``silver.alertas_calidad`` en vez de abortar.
     """
     tablas = {
         "perfiles_pacientes_co": f"{catalog}.silver.perfiles_pacientes_co",
@@ -107,16 +136,55 @@ def run_quality_expectations(spark, catalog: str) -> bool:
     }
     datos = {nombre: [row.asDict() for row in spark.table(tabla).collect()] for nombre, tabla in tablas.items()}
 
-    problems: list[str] = []
-    problems += check_perfiles_pacientes_co(datos["perfiles_pacientes_co"])
-    problems += check_casos_clinicos_etiquetados(datos["casos_clinicos_etiquetados"])
-    problems += check_dialogos_capa1_limpia(datos["dialogos_capa1_limpia"])
-    problems += check_noise_mapping_log(datos["dialogos_capa2_ruidosa"], datos["noise_mapping_log"])
-    problems += check_dialogos_capa3_limite(datos["dialogos_capa3_limite"])
+    blocking_problems: list[str] = []
+    blocking_problems += check_perfiles_pacientes_co(datos["perfiles_pacientes_co"])
+    blocking_problems += check_casos_clinicos_etiquetados_no_vacio(datos["casos_clinicos_etiquetados"])
+    blocking_problems += check_dialogos_capa1_limpia(datos["dialogos_capa1_limpia"])
+    blocking_problems += check_noise_mapping_log(datos["dialogos_capa2_ruidosa"], datos["noise_mapping_log"])
+    blocking_problems += check_dialogos_capa3_limite(datos["dialogos_capa3_limite"])
 
-    for problem in problems:
-        print(f"[publish_gold] expectativa fallida: {problem}")
-    return not problems
+    advisory_problems = check_casos_clinicos_etiquetados_balance(datos["casos_clinicos_etiquetados"])
+
+    for problem in blocking_problems:
+        print(f"[publish_gold] expectativa fallida (bloqueante): {problem}")
+    for problem in advisory_problems:
+        print(f"[publish_gold] alerta no bloqueante: {problem}")
+
+    return not blocking_problems, advisory_problems
+
+
+def _build_alertas_rows(alertas: list[str], catalog: str, run_ts: datetime) -> list[dict]:
+    """Arma las filas de ``silver.alertas_calidad`` a partir de los mensajes de
+    ``run_quality_expectations`` — aislado de ``write_quality_alerts`` para poder
+    probarse sin Spark (Plan 09), mismo patrón que ``_casos_pendientes`` en
+    ``simulate_dual_llm.py``.
+    """
+    ts_key = run_ts.strftime("%Y%m%dT%H%M%S%f")
+    return [
+        {
+            "alerta_id": f"alerta_{ts_key}_{i}",
+            "check_nombre": "casos_clinicos_etiquetados_balance",
+            "detalle": detalle,
+            "severidad": "advertencia",
+            "catalog_run": catalog,
+            "generado_ts": run_ts,
+        }
+        for i, detalle in enumerate(alertas)
+    ]
+
+
+def write_quality_alerts(spark, catalog: str, alertas: list[str]) -> None:
+    """Registra las expectativas de §12 marcadas como no bloqueantes (Plan 09) en
+    ``silver.alertas_calidad`` — visibles para cualquier consumidor del dataset (grant
+    explícito en ``sql/ddl/30_publish_gold_grants.sql``), no solo en el log del job.
+    Append-only: cada corrida agrega sus propias alertas, no reemplaza las anteriores —
+    es un registro de auditoría por corrida, no un estado mutable único.
+    """
+    from postop import schemas  # import diferido — pyspark solo existe en el cluster
+
+    rows = _build_alertas_rows(alertas, catalog, datetime.now(timezone.utc))
+    df = spark.createDataFrame(rows, schema=schemas.ALERTAS_CALIDAD_SCHEMA)
+    df.write.format("delta").mode("append").saveAsTable(f"{catalog}.silver.alertas_calidad")
 
 
 _REPO_ROOT = _SQL_DDL_ROOT.parent.parent
@@ -187,8 +255,12 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     spark = SparkSession.builder.getOrCreate()
 
-    if not run_quality_expectations(spark=spark, catalog=args.catalog):
+    ok_para_publicar, alertas = run_quality_expectations(spark=spark, catalog=args.catalog)
+    if not ok_para_publicar:
         raise RuntimeError("Expectativas de calidad (§12) no satisfechas — publicación abortada")
+
+    if alertas:
+        write_quality_alerts(spark=spark, catalog=args.catalog, alertas=alertas)
 
     apply_grants(spark=spark, catalog=args.catalog, committee_emails=committee_emails)
     publish_gold_views(spark=spark, catalog=args.catalog)

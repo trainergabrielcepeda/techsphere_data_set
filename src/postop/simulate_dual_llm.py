@@ -6,16 +6,21 @@ LLMs ve el label ground-truth durante la generación (§8.1) — se adjunta como
 DESPUÉS de generar la transcripción, para no contaminar el lenguaje generado con la
 clasificación (riesgo R4).
 
-Orquestación (§8.2, revisado Plan 06): OpenRouter (API externa vía Databricks Secret
-Scopes, riesgo R5) es el camino primario — validado contra el workspace real en Plan 06
-Fase 0: el egress desde Free Edition serverless hacia openrouter.ai funciona, y modelos
-``:free`` reservan capacidad limitada por proveedor upstream (se satura rápido en modelos
-populares — confirmado empíricamente, no solo el límite de cuenta de 20 req/min y
-50-o-1000 req/día de OpenRouter). Databricks Model Serving (``_default_client``) queda
-como segundo camino, sin validar todavía si Free Edition expone un endpoint foundation-
-model consultable — no es el que usa esta implementación. Nunca credenciales
-hardcodeadas en ningún caso; la API key de OpenRouter vive en el Secret Scope
-(``--secret-scope``, clave ``openrouter-api-key``).
+Orquestación (§8.2, revisado Plan 06, extendido Plan 08): OpenRouter (API externa vía
+Databricks Secret Scopes, riesgo R5) es el camino primario — validado contra el workspace
+real en Plan 06 Fase 0: el egress desde Free Edition serverless hacia openrouter.ai
+funciona, y modelos ``:free`` reservan capacidad limitada por proveedor upstream (se
+satura rápido en modelos populares — confirmado empíricamente, no solo el límite de
+cuenta de 20 req/min y 50-o-1000 req/día de OpenRouter). Databricks Model Serving
+(``_default_client``) queda como segundo camino, sin validar todavía si Free Edition
+expone un endpoint foundation-model consultable — no es el que usa esta implementación.
+La API de Anthropic (``_anthropic_client``, Plan 08) es un tercer camino, seleccionable
+con ``--llm-provider=anthropic`` — sin la cuota diaria de cuenta que bloquea a OpenRouter
+en su nivel gratuito, a costa de facturación por token desde la primera llamada. Los tres
+comparten el mismo contrato ``LLMClientFn`` — el resto del pipeline (turnos, resume/skip,
+MERGE) no distingue entre proveedores. Nunca credenciales hardcodeadas en ningún caso; las
+API keys viven en Secret Scopes (``--secret-scope``, claves ``openrouter-api-key`` /
+``anthropic-api-key``).
 
 Nota de implementación (Plan 06): ``_openrouter_client`` fija un modelo primario
 (``nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`` por defecto — el único, junto con
@@ -84,6 +89,16 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 # proveedor upstream, no de este límite.
 OPENROUTER_MIN_INTERVAL_S = 4.0
 OPENROUTER_MAX_ATTEMPTS_PER_MODEL = 4
+
+# Camino alternativo vía la API de Anthropic (Plan 08) — sin cuota diaria de cuenta, a
+# diferencia del nivel gratuito de OpenRouter; facturado por token desde la primera
+# llamada. claude-sonnet-5: el modelo evaluado y presupuestado explícitamente en la
+# sesión que originó este plan, no un default silencioso a un modelo más caro.
+ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5"
+# Tope de salida sin validar empíricamente contra el modelo real (Plan 08, riesgo
+# abierto) — punto de partida razonable para mantener los turnos breves, a confirmar con
+# una llamada de spike antes de una corrida real.
+ANTHROPIC_DEFAULT_MAX_TOKENS = 500
 
 
 @dataclass
@@ -217,6 +232,7 @@ def _openrouter_request(
     api_key: str,
     pacer: _RequestPacer,
     max_attempts: int,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     """Llama a OpenRouter con auto-throttling + reintentos con backoff. Confirmado contra
     fallos reales en Plan 06 Fase 0: los 429 "temporarily rate-limited upstream" son la
@@ -224,6 +240,9 @@ def _openrouter_request(
     ``retry_after_seconds`` cuando el proveedor lo da, si no con backoff exponencial +
     jitter. Errores 4xx que no son 429 (auth inválida, payload malformado) fallan de
     inmediato: reintentar no los arregla y enmascararía el problema real.
+
+    ``max_tokens`` (Plan 07/08) — tope de tokens de salida por turno, para conversaciones
+    breves; ``None`` preserva el comportamiento previo (sin tope explícito en el payload).
     """
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -232,6 +251,8 @@ def _openrouter_request(
         "X-Title": "postop-dataset-simulate-dual-llm",
     }
     payload = {"model": model, "messages": [{"role": "system", "content": system_prompt}, *history]}
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
 
     last_status: Optional[int] = None
     last_body: str = ""
@@ -265,6 +286,7 @@ def _openrouter_client(
     fallback_model: str = OPENROUTER_FALLBACK_MODEL,
     min_interval_s: float = OPENROUTER_MIN_INTERVAL_S,
     max_attempts_per_model: int = OPENROUTER_MAX_ATTEMPTS_PER_MODEL,
+    max_tokens: Optional[int] = None,
 ) -> LLMClientFn:
     """Camino externo primario vía OpenRouter (§8.2, riesgo R5 — validado en Plan 06 Fase
     0 contra el workspace real: el egress funciona, modelos ``:free`` populares se saturan
@@ -272,6 +294,10 @@ def _openrouter_client(
     agotamiento de reintentos recae en ``fallback_model`` (el auto-router
     ``openrouter/free``) antes de fallar la llamada por completo — la Fase 0 mostró al
     auto-router respondiendo en el mismo momento en que varios modelos fijos daban 429.
+
+    ``max_tokens`` (Plan 07/08) — tope de salida por turno, compartido con
+    ``_anthropic_client`` para que la brevedad de la conversación no dependa de qué
+    proveedor esté activo.
     """
     from databricks.sdk import WorkspaceClient  # import diferido — solo en el cluster
 
@@ -281,9 +307,9 @@ def _openrouter_client(
 
     def _call(system_prompt: str, history: list[dict]) -> LLMTurnResult:
         try:
-            data = _openrouter_request(model, system_prompt, history, api_key, pacer, max_attempts_per_model)
+            data = _openrouter_request(model, system_prompt, history, api_key, pacer, max_attempts_per_model, max_tokens)
         except _OpenRouterRetriesExhausted:
-            data = _openrouter_request(fallback_model, system_prompt, history, api_key, pacer, max_attempts_per_model)
+            data = _openrouter_request(fallback_model, system_prompt, history, api_key, pacer, max_attempts_per_model, max_tokens)
         choice = data["choices"][0]
         usage = data.get("usage") or {}
         return LLMTurnResult(
@@ -295,17 +321,80 @@ def _openrouter_client(
     return _call
 
 
+def _parse_anthropic_response(response) -> LLMTurnResult:
+    """Mapea la forma de respuesta del SDK de Anthropic (bloques de ``content`` +
+    ``usage.input_tokens``/``output_tokens``) a ``LLMTurnResult`` — aislado del resto de
+    ``_anthropic_client`` (Plan 08) para poder probarse contra un objeto de respuesta
+    construido a mano, sin llamar a la API real. El primer bloque ``type == "text"`` es la
+    respuesta visible; bloques de otro tipo (p. ej. ``thinking``, con la salida
+    "razonada" oculta del modelo) se ignoran aquí — nunca deben terminar en el
+    diálogo (riesgo de fuga del razonamiento interno hacia dialogos_capa1_limpia).
+    """
+    texto = next(block.text for block in response.content if block.type == "text")
+    usage = response.usage
+    return LLMTurnResult(
+        texto=texto,
+        prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
+        completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+    )
+
+
+def _anthropic_client(
+    model: str,
+    secret_scope: str,
+    secret_key: str = "anthropic-api-key",
+    max_tokens: Optional[int] = None,
+) -> LLMClientFn:
+    """Camino externo alternativo vía la API de Anthropic (Plan 08) — mismo contrato
+    ``LLMClientFn`` que ``_openrouter_client``/``_default_client``, seleccionable con
+    ``--llm-provider=anthropic``. Sin cuota diaria de cuenta (a diferencia del nivel
+    gratuito de OpenRouter): el reintento incorporado del SDK (``max_retries``, cubre
+    429/408/409/5xx y errores de conexión) basta aquí, sin pacer/backoff propio como el
+    de OpenRouter — ese existía específicamente para la congestión del nivel gratuito.
+
+    ``effort: "low"`` + thinking adaptativo (en vez de desactivado): estos son turnos
+    conversacionales cortos y de un solo tema, no tareas que necesiten razonamiento
+    profundo — effort bajo mantiene las respuestas breves y baratas sin desactivar el
+    thinking adaptativo del modelo por completo.
+    """
+    import anthropic  # import diferido — solo necesario si este proveedor está activo
+
+    from databricks.sdk import WorkspaceClient  # import diferido — solo en el cluster
+
+    secret = WorkspaceClient().secrets.get_secret(scope=secret_scope, key=secret_key)
+    api_key = base64.b64decode(secret.value).decode("utf-8")
+    client = anthropic.Anthropic(api_key=api_key)
+    resolved_max_tokens = max_tokens if max_tokens is not None else ANTHROPIC_DEFAULT_MAX_TOKENS
+
+    def _call(system_prompt: str, history: list[dict]) -> LLMTurnResult:
+        response = client.messages.create(
+            model=model,
+            max_tokens=resolved_max_tokens,
+            system=system_prompt,
+            messages=history,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low"},
+        )
+        return _parse_anthropic_response(response)
+
+    return _call
+
+
 def _build_default_client(
     llm_provider: str,
     model_serving_endpoint: str,
     secret_scope: str,
     openrouter_model: str,
+    anthropic_model: str = ANTHROPIC_DEFAULT_MODEL,
+    max_tokens: Optional[int] = None,
 ) -> LLMClientFn:
     if llm_provider == "openrouter":
-        return _openrouter_client(openrouter_model, secret_scope)
+        return _openrouter_client(openrouter_model, secret_scope, max_tokens=max_tokens)
     if llm_provider == "databricks":
         return _default_client(model_serving_endpoint, secret_scope)
-    raise ValueError(f"llm_provider inválido: {llm_provider!r} — debe ser 'openrouter' o 'databricks'")
+    if llm_provider == "anthropic":
+        return _anthropic_client(anthropic_model, secret_scope, max_tokens=max_tokens)
+    raise ValueError(f"llm_provider inválido: {llm_provider!r} — debe ser 'openrouter', 'databricks' o 'anthropic'")
 
 
 def simulate_conversation(
@@ -315,6 +404,8 @@ def simulate_conversation(
     secret_scope: str,
     llm_provider: str = "openrouter",
     openrouter_model: str = OPENROUTER_DEFAULT_MODEL,
+    anthropic_model: str = ANTHROPIC_DEFAULT_MODEL,
+    max_tokens: Optional[int] = None,
     patient_client: Optional[LLMClientFn] = None,
     agent_client: Optional[LLMClientFn] = None,
 ) -> dict:
@@ -325,9 +416,13 @@ def simulate_conversation(
 
     ``patient_client``/``agent_client`` son inyectables para pruebas; por defecto ambos
     apuntan al mismo proveedor (``llm_provider`` — ``"openrouter"`` primario desde Plan 06,
-    ``"databricks"`` vía Model Serving sin validar en Free Edition, §8.2).
+    ``"anthropic"`` alternativo sin cuota diaria desde Plan 08, ``"databricks"`` vía Model
+    Serving sin validar en Free Edition, §8.2). ``max_tokens`` (Plan 07/08) aplica por
+    igual a openrouter y anthropic — un solo tope de brevedad sin importar el proveedor.
     """
-    patient_client = patient_client or _build_default_client(llm_provider, model_serving_endpoint, secret_scope, openrouter_model)
+    patient_client = patient_client or _build_default_client(
+        llm_provider, model_serving_endpoint, secret_scope, openrouter_model, anthropic_model, max_tokens
+    )
     agent_client = agent_client or patient_client
 
     patient_prompt = build_patient_prompt(caso, estilo_paciente)
@@ -378,6 +473,8 @@ def run_dual_llm_batch(
     secret_scope: str,
     llm_provider: str = "openrouter",
     openrouter_model: str = OPENROUTER_DEFAULT_MODEL,
+    anthropic_model: str = ANTHROPIC_DEFAULT_MODEL,
+    max_tokens: Optional[int] = None,
 ) -> None:
     """Distribuye ``simulate_conversation`` sobre los casos de ``casos_table``, con
     checkpointing por caso (``MERGE`` idempotente por ``caso_id``-derivado ``dialogo_id``,
@@ -407,8 +504,13 @@ def run_dual_llm_batch(
     # Etiqueta de proveniencia para modelo_paciente/modelo_agente (§16) — el modelo
     # realmente fijado; si _openrouter_client recae en OPENROUTER_FALLBACK_MODEL a mitad
     # de una llamada puntual (Plan 06 Fase 1), esa columna sigue reflejando el primario
-    # configurado para la corrida, no el fallback puntual de un turno aislado.
-    modelo_configurado = openrouter_model if llm_provider == "openrouter" else model_serving_endpoint
+    # configurado para la corrida, no el fallback puntual de un turno aislado. Extendido
+    # en Plan 08 para el tercer proveedor (anthropic).
+    modelo_configurado = {
+        "openrouter": openrouter_model,
+        "anthropic": anthropic_model,
+        "databricks": model_serving_endpoint,
+    }[llm_provider]
 
     for caso_row in casos_rows:
         paciente_id = caso_row["paciente_id"]
@@ -426,7 +528,8 @@ def run_dual_llm_batch(
         }
         estilo_paciente = rng.choice(PATIENT_STYLES)
         resultado = simulate_conversation(
-            caso, estilo_paciente, model_serving_endpoint, secret_scope, llm_provider, openrouter_model
+            caso, estilo_paciente, model_serving_endpoint, secret_scope, llm_provider, openrouter_model,
+            anthropic_model, max_tokens,
         )
 
         rows = [
@@ -467,9 +570,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--catalog", required=True, help="Nombre del catálogo Unity Catalog")
     parser.add_argument(
         "--llm-provider",
-        choices=["openrouter", "databricks"],
+        choices=["openrouter", "databricks", "anthropic"],
         default="openrouter",
-        help="Proveedor LLM — 'openrouter' (Plan 06, validado contra el workspace real en Fase 0) por defecto; 'databricks' vía Model Serving, sin validar en Free Edition",
+        help="Proveedor LLM — 'openrouter' (Plan 06, validado contra el workspace real en Fase 0) por defecto; 'databricks' vía Model Serving, sin validar en Free Edition; 'anthropic' (Plan 08), sin cuota diaria de cuenta pero facturado por token",
     )
     parser.add_argument(
         "--openrouter-model",
@@ -477,11 +580,22 @@ def main(argv: Optional[list[str]] = None) -> None:
         help="Modelo ':free' primario en OpenRouter (usado solo si --llm-provider=openrouter) — recae automáticamente en openrouter/free si agota sus reintentos",
     )
     parser.add_argument(
+        "--anthropic-model",
+        default=ANTHROPIC_DEFAULT_MODEL,
+        help="Modelo de la API de Anthropic (usado solo si --llm-provider=anthropic) — Plan 08",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Tope de tokens de salida por turno agente/paciente — aplica a openrouter y anthropic por igual (Plan 07/08). None = sin tope explícito para openrouter; anthropic usa ANTHROPIC_DEFAULT_MAX_TOKENS si se omite (max_tokens es obligatorio en su SDK)",
+    )
+    parser.add_argument(
         "--model-serving-endpoint",
         default="",
         help="Endpoint de Databricks Model Serving (§8.2) — usado solo si --llm-provider=databricks",
     )
-    parser.add_argument("--secret-scope", required=True, help="Databricks Secret Scope con la credencial del LLM externo (§8.2, §13) — clave 'openrouter-api-key' para el camino OpenRouter")
+    parser.add_argument("--secret-scope", required=True, help="Databricks Secret Scope con la credencial del LLM externo (§8.2, §13) — clave 'openrouter-api-key' o 'anthropic-api-key' según --llm-provider")
     args = parser.parse_args(argv)
 
     cfg = config.load_config()
@@ -500,6 +614,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         secret_scope=args.secret_scope,
         llm_provider=args.llm_provider,
         openrouter_model=args.openrouter_model,
+        anthropic_model=args.anthropic_model,
+        max_tokens=args.max_tokens,
     )
 
 

@@ -19,5 +19,11 @@ Faker>=25.0
 # Secret Scopes, nunca hardcodeadas.
 databricks-sdk>=0.30
 
+# Componente 4 — camino alternativo vía la API de Anthropic (Plan 08), sin la cuota
+# diaria de cuenta del nivel gratuito de OpenRouter. Plan 06 había quitado esta
+# dependencia cuando el camino OpenRouter (HTTP plano) la dejó como peso muerto — vuelve
+# a usarse de verdad ahora en _anthropic_client.
+anthropic>=0.68
+
 # Tooling
 pytest>=8.0
