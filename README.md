@@ -21,18 +21,20 @@ abajo, en "Desplegar el bundle".
 
 ## Estado
 
-Scaffold inicial del Databricks Asset Bundle (Plan 01): estructura, contratos de
-datos (DDL), Workflow y stubs de los 6 componentes del pipeline. **Ningún
-componente tiene lógica de negocio implementada todavía** — cada `src/postop/*.py`
-declara su firma, su esquema Spark explícito y levanta `NotImplementedError`. La
-implementación real de cada componente es un plan de seguimiento independiente
-(ver Diseño Técnico §17, próximos pasos).
+Pipeline completo implementado: los 6 componentes (`src/postop/*.py`) tienen lógica de
+negocio real, no stubs — generación de perfiles sintéticos, adaptación a Colombia,
+motor de ground-truth, simulación dual-LLM, inyector de ruido y curaduría manual de
+casos límite. 92 pruebas pasan (`pytest -q`) y el pipeline se validó con corridas
+piloto reales contra un workspace de Databricks (Plan 06/07/08). Cambio más reciente:
+el gate de calidad de balance de labels pasó a ser no bloqueante y la corrida piloto
+escaló a 40 pacientes (Plan 09). Ver `docs/generador-datos.md` para el estado "tal
+como está implementado hoy" y `Plans/` para el historial completo de decisiones.
 
 ## Estructura del proyecto
 
 ```
 databricks.yml                  # Databricks Asset Bundle: targets dev/prod, variables
-requirements.txt                 # stack: pyspark, delta-spark, pysynthea, faker, databricks-sdk, anthropic
+requirements.txt                 # stack: pyspark, delta-spark, Faker, databricks-sdk, anthropic
 conf/project.yml                 # catálogo/esquemas, allowlist de módulos Synthea, días de llamada, piloto
 resources/postop_pipeline.job.yml  # Databricks Workflow — DAG de 7 tasks (§11)
 sql/ddl/                         # contratos de datos versionados, un .sql por tabla (§4, §8.3, §9.2, §10)
